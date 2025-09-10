@@ -1,19 +1,19 @@
 package org.skratch.transferservice.service;
 
 import jakarta.transaction.Transactional;
-import lombok.RequiredArgsConstructor;
+import lombok.extern.slf4j.Slf4j;
 import org.skratch.transferservice.dto.BatchTransferRequest;
 import org.skratch.transferservice.dto.BatchTransferResponse;
 import org.skratch.transferservice.dto.LedgerTransferRequest;
 import org.skratch.transferservice.dto.LedgerTransferResponse;
 import org.skratch.transferservice.dto.TransferRequest;
 import org.skratch.transferservice.dto.TransferResponse;
-import org.skratch.transferservice.mapper.BatchTransferMapper;
+import org.skratch.transferservice.exceptions.ResourceNotFoundException;
+import org.skratch.transferservice.exceptions.TransferException;
 import org.skratch.transferservice.mapper.TransferMapper;
 import org.skratch.transferservice.model.Transfer;
 import org.skratch.transferservice.repository.TransferRepository;
 import org.springframework.stereotype.Service;
-import org.springframework.web.client.RestTemplate;
 
 import java.util.List;
 import java.util.UUID;
@@ -21,46 +21,68 @@ import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 
+@Slf4j
 @Service
-@RequiredArgsConstructor
 public class TransferServiceImpl implements TransferService {
 
     private final TransferRepository transferRepository;
     private final TransferMapper transferMapper;
-    private final BatchTransferMapper batchTransferMapper;
     private final LedgerClient ledgerClient;
 
     private final ExecutorService executor = Executors.newFixedThreadPool(10);
 
-    private static final String LEDGER_SERVICE_URL = "http://ledger-service:8081/ledger/transfer";
+    private static final String LEDGER_SERVICE_URL = "http://localhost:8081/ledger/transfer";
 
+    public TransferServiceImpl(TransferRepository transferRepository, TransferMapper transferMapper, LedgerClient ledgerClient) {
+        this.transferRepository = transferRepository;
+        this.transferMapper = transferMapper;
+        this.ledgerClient = ledgerClient;
+    }
     @Override
     @Transactional
     public TransferResponse initiateTransfer(TransferRequest request, String idempotencyKey) {
-        // Check idempotency
+        log.info("Starting transfer: from={} to={} amount={} idempotencyKey={}",
+                request.getFromAccountId(), request.getToAccountId(), request.getAmount(), idempotencyKey);
+
+
+        if (request.getFromAccountId().equals(request.getToAccountId())) {
+            throw new TransferException("Source and destination accounts must be different");
+        }
+        if (request.getAmount() == null || request.getAmount().signum() <= 0) {
+            throw new TransferException("Transfer amount must be greater than zero");
+        }
+
+        // ✅ Idempotency check
         return transferRepository.findByIdempotencyKey(idempotencyKey)
-                .map(transferMapper::toTransferResponse)
-                .orElseGet(() -> {
-                    // create transfer
+                .map(existing -> {
+                    log.warn("Duplicate transfer request detected for idempotencyKey={}, returning existing result", idempotencyKey);
+                    return transferMapper.toTransferResponse(existing);
+                }).orElseGet(() -> {
+
                     Transfer transfer = transferMapper.toEntity(request, idempotencyKey);
                     transfer.setTransferId(UUID.randomUUID().toString());
                     Transfer saved = transferRepository.save(transfer);
 
-                    // build Ledger request
+                    log.debug("Saved transfer with transferId={} and status={}", saved.getTransferId(), saved.getStatus());
+
                     LedgerTransferRequest ledgerReq = new LedgerTransferRequest();
                     ledgerReq.setTransferId(saved.getTransferId());
                     ledgerReq.setFromAccountId(saved.getFromAccountId());
                     ledgerReq.setToAccountId(saved.getToAccountId());
                     ledgerReq.setAmount(saved.getAmount());
 
-                    // call Ledger Service with circuit breaker
+                    log.info("Sending transferId={} to Ledger Service", saved.getTransferId());
+
                     LedgerTransferResponse ledgerResp = ledgerClient.sendTransfer(ledgerReq);
 
-                    // update transfer status
-                    saved.setStatus(ledgerResp.isSuccess()
-                            ? Transfer.Status.SUCCESS
-                            : Transfer.Status.FAILED);
+                    if (!ledgerResp.isSuccess()) {
+                        throw new TransferException("Ledger transfer failed: " + ledgerResp.getMessage());
+                    }
+
+                    saved.setStatus(Transfer.Status.SUCCESS);
                     transferRepository.save(saved);
+
+                    log.info("TransferId={} completed with status={}", saved.getTransferId(), saved.getStatus());
 
                     return transferMapper.toTransferResponse(saved);
                 });
@@ -69,14 +91,21 @@ public class TransferServiceImpl implements TransferService {
     @Override
     @Transactional
     public TransferResponse getTransferById(UUID id) {
+        log.debug("Fetching transfer by transferId={}", id);
         return transferRepository.findByTransferId(id.toString())
                 .map(transferMapper::toTransferResponse)
-                .orElseThrow(() -> new IllegalArgumentException("Transfer not found: " + id));
+                .orElseThrow(() -> {
+                    log.error("Transfer not found for transferId={}", id);
+                    return new IllegalArgumentException("Transfer not found: " + id);
+                });
     }
 
     @Override
     @Transactional
     public BatchTransferResponse initiateBatchTransfer(BatchTransferRequest request, String idempotencyKey) {
+        log.info("Initiating batch transfer with {} transfers, idempotencyKey={}",
+                request.getTransfers().size(), idempotencyKey);
+
         List<CompletableFuture<TransferResponse>> futures = request.getTransfers().stream()
                 .map(dto -> CompletableFuture.supplyAsync(
                         () -> initiateTransfer(dto, idempotencyKey), executor))
@@ -85,6 +114,8 @@ public class TransferServiceImpl implements TransferService {
         List<TransferResponse> results = futures.stream()
                 .map(CompletableFuture::join)
                 .toList();
+
+        log.info("Batch transfer completed: {} transfers processed", results.size());
 
         return BatchTransferResponse.builder().results(results).build();
     }

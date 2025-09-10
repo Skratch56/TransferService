@@ -3,6 +3,9 @@ package org.skratch.transferservice.service;
 import lombok.extern.slf4j.Slf4j;
 import org.skratch.transferservice.dto.LedgerTransferRequest;
 import org.skratch.transferservice.dto.LedgerTransferResponse;
+import org.slf4j.MDC;
+import org.springframework.http.HttpHeaders;
+import org.springframework.http.MediaType;
 import org.springframework.stereotype.Component;
 import org.springframework.web.client.RestTemplate;
 
@@ -17,7 +20,7 @@ public class LedgerClient {
     private volatile long lastFailureTime = 0;
     private static final int FAILURE_THRESHOLD = 3;
     private static final long OPEN_STATE_DURATION_MS = 10_000; // 10s
-    private static final String LEDGER_SERVICE_URL = "http://ledger-service:8081/ledger/transfer";
+    private static final String LEDGER_SERVICE_URL = "http://localhost:8081/ledger/transfer";
 
     public LedgerClient(RestTemplate restTemplate) {
         this.restTemplate = restTemplate;
@@ -32,7 +35,12 @@ public class LedgerClient {
                     .message("Circuit open - Ledger Service temporarily unavailable")
                     .build();
         }
-
+        HttpHeaders headers = new HttpHeaders();
+        headers.setContentType(MediaType.APPLICATION_JSON);
+        String correlationId = MDC.get("correlationId");
+        if (correlationId != null) {
+            headers.set("X-Request-ID", correlationId);
+        }
         try {
             LedgerTransferResponse resp = restTemplate.postForObject(
                     LEDGER_SERVICE_URL, request, LedgerTransferResponse.class);

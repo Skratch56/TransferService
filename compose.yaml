@@ -10,12 +10,13 @@ services:
       POSTGRES_USER: payments_user
       POSTGRES_PASSWORD: payments_pass
 
-  transfer-service:
-    build: ./transfer-service
+  transfer-service3:
+    build:
+      context: .
+      dockerfile: Dockerfile
     container_name: transfer-service
     depends_on:
       - db
-      - ledger-service
     environment:
       SPRING_DATASOURCE_URL: jdbc:postgresql://db:5432/paymentsdb
       SPRING_DATASOURCE_USERNAME: payments_user
@@ -23,4 +24,4 @@ services:
       SERVER_PORT: 8080
       LEDGER_SERVICE_URL: http://ledger-service:8081
     ports:
-      - "8080:8080"
+      - 8080:8080
