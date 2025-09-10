@@ -1,0 +1,53 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<Configuration status="WARN" name="Transfer Service">
+    <Properties>
+        <Property name="log-path">logs</Property>
+        <Property name="logfile-name">transfer-service</Property>
+        <Property name="LOG_EXCEPTION_CONVERSION_WORD">%xwEx</Property>
+        <Property name="LOG_LEVEL_PATTERN">%5p</Property>
+    </Properties>
+
+    <Appenders>
+        <!-- Console appender for logs in terminal -->
+        <Console name="Console" target="SYSTEM_OUT">
+            <PatternLayout pattern="%clr{%d{yyyy-MM-dd HH:mm:ss.SSS}}{faint} %clr{${LOG_LEVEL_PATTERN}} %clr{${sys:PID}}{magenta} %clr{---}{faint} [@project.artifactId@-@project.version@] %clr{[%15.15t]}{faint} %clr{%-40.40c{1.}}{cyan} %clr{[%X{traceId}]}{faint} %clr{:}{faint}  %m%n${sys:LOG_EXCEPTION_CONVERSION_WORD}" />
+        </Console>
+
+        <!-- File appender to log into a single file -->
+        <File name="File" fileName="${log-path}/${logfile-name}.log">
+            <PatternLayout pattern="%d{yyyy-MM-dd HH:mm:ss.SSS} ${LOG_LEVEL_PATTERN} ${sys:PID} --- [@project.artifactId@-@project.version@] [%15.15t] %c %X{traceId} : %m%n${sys:LOG_EXCEPTION_CONVERSION_WORD}" />
+        </File>
+    </Appenders>
+
+    <Loggers>
+        <Root level="INFO">
+            <AppenderRef ref="Console"/>
+            <AppenderRef ref="File"  level="DEBUG"/>
+        </Root>
+
+        <Logger name="org.springframework" level="INFO" additivity="false">
+            <AppenderRef ref="Console"/>
+            <AppenderRef ref="File" level="DEBUG"/>
+        </Logger>
+
+        <Logger name="org.apache.catalina" level="INFO" additivity="false">
+            <AppenderRef ref="Console"/>
+            <AppenderRef ref="File" level="DEBUG"/>
+        </Logger>
+
+        <Logger name="org.hibernate" level="INFO" additivity="false">
+            <AppenderRef ref="Console"/>
+            <AppenderRef ref="File" level="DEBUG"/>
+        </Logger>
+
+        <Logger name="com.zaxxer.hikari" level="INFO" additivity="false">
+            <AppenderRef ref="Console"/>
+            <AppenderRef ref="File" level="DEBUG"/>
+        </Logger>
+
+        <Logger name="com.medium" level="DEBUG" additivity="false">
+            <AppenderRef ref="Console"/>
+            <AppenderRef ref="File"/>
+        </Logger>
+    </Loggers>
+</Configuration>

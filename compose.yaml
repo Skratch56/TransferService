@@ -1,0 +1,21 @@
+version: "3.9"
+services:
+  transfer-service:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: transfer-service
+    networks:
+      - payments-net
+    environment:
+      SPRING_DATASOURCE_URL: jdbc:postgresql://db:5432/paymentsdb
+      SPRING_DATASOURCE_USERNAME: payments_user
+      SPRING_DATASOURCE_PASSWORD: payments_pass
+      SERVER_PORT: 8080
+      LEDGER_SERVICE_URL: http://ledger-service:8081
+    ports:
+      - 8080:8080
+
+networks:
+  payments-net:
+    external: true
