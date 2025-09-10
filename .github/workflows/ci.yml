@@ -1,4 +1,4 @@
-name: Transfer-Service
+name: Transfer-Service CI
 
 on:
   push:
@@ -12,7 +12,7 @@ jobs:
 
     services:
       postgres:
-        image: postgres:15
+        image: postgres:16
         env:
           POSTGRES_USER: test
           POSTGRES_PASSWORD: test
@@ -36,5 +36,8 @@ jobs:
           java-version: 21
           cache: maven
 
-      - name: Build with Maven
-        run: mvn -B clean verify
+      - name: Run Unit Tests
+        run: mvn -B clean test --file pom.xml
+
+      - name: Run Integration Tests
+        run: mvn -B verify -Pintegration --file pom.xml
