@@ -3,57 +3,58 @@ package org.skratch.transferservice.service;
 import lombok.extern.slf4j.Slf4j;
 import org.skratch.transferservice.dto.LedgerTransferRequest;
 import org.skratch.transferservice.dto.LedgerTransferResponse;
+import org.skratch.transferservice.exceptions.CircuitBreakerOpenException;
 import org.slf4j.MDC;
 import org.springframework.http.HttpHeaders;
 import org.springframework.http.MediaType;
 import org.springframework.stereotype.Component;
 import org.springframework.web.client.RestTemplate;
 
+import java.io.ObjectInputFilter;
+import java.util.Properties;
 import java.util.concurrent.atomic.AtomicInteger;
 
 @Slf4j
 @Component
 public class LedgerClient {
-
+    private final Properties config;
     private final RestTemplate restTemplate;
     private final AtomicInteger failureCount = new AtomicInteger(0);
     private volatile long lastFailureTime = 0;
     private static final int FAILURE_THRESHOLD = 3;
     private static final long OPEN_STATE_DURATION_MS = 10_000; // 10s
-    private static final String LEDGER_SERVICE_URL = "http://localhost:8081/ledger/transfer";
 
-    public LedgerClient(RestTemplate restTemplate) {
+
+    public LedgerClient(RestTemplate restTemplate, Properties config) {
         this.restTemplate = restTemplate;
+        this.config = config;
     }
 
     public LedgerTransferResponse sendTransfer(LedgerTransferRequest request) {
+        String ledgerServiceUrl = config.getProperty("ledger.service.transfer");
         if (isCircuitOpen()) {
-            log.warn("Circuit OPEN - skipping call to LedgerService for transferId={}", request.getTransferId());
-            return LedgerTransferResponse.builder()
-                    .transferId(request.getTransferId())
-                    .success(false)
-                    .message("Circuit open - Ledger Service temporarily unavailable")
-                    .build();
+            String msg = "Circuit OPEN - Ledger Service temporarily unavailable for transferId=" + request.getTransferId();
+            log.warn(msg);
+            throw new CircuitBreakerOpenException(msg);
         }
+
         HttpHeaders headers = new HttpHeaders();
         headers.setContentType(MediaType.APPLICATION_JSON);
         String correlationId = MDC.get("correlationId");
         if (correlationId != null) {
             headers.set("X-Request-ID", correlationId);
         }
+
         try {
             LedgerTransferResponse resp = restTemplate.postForObject(
-                    LEDGER_SERVICE_URL, request, LedgerTransferResponse.class);
+                    ledgerServiceUrl, request, LedgerTransferResponse.class);
             resetFailures();
             return resp;
         } catch (Exception ex) {
             recordFailure();
-            log.error("LedgerService call failed for transferId={}, error={}", request.getTransferId(), ex.getMessage());
-            return LedgerTransferResponse.builder()
-                    .transferId(request.getTransferId())
-                    .success(false)
-                    .message("Ledger call failed: " + ex.getMessage())
-                    .build();
+            String msg = "LedgerService call failed for transferId=" + request.getTransferId() + ", error=" + ex.getMessage();
+            log.error(msg);
+            throw new CircuitBreakerOpenException("Ledger call failed: " + ex.getMessage());
         }
     }
 
@@ -62,7 +63,7 @@ public class LedgerClient {
             if (System.currentTimeMillis() - lastFailureTime < OPEN_STATE_DURATION_MS) {
                 return true;
             }
-            resetFailures(); // half-open: let next call try again
+            resetFailures();
         }
         return false;
     }

@@ -8,6 +8,7 @@ import org.skratch.transferservice.dto.LedgerTransferRequest;
 import org.skratch.transferservice.dto.LedgerTransferResponse;
 import org.skratch.transferservice.dto.TransferRequest;
 import org.skratch.transferservice.dto.TransferResponse;
+import org.skratch.transferservice.exceptions.CircuitBreakerOpenException;
 import org.skratch.transferservice.exceptions.ResourceNotFoundException;
 import org.skratch.transferservice.exceptions.TransferException;
 import org.skratch.transferservice.mapper.TransferMapper;
@@ -20,6 +21,7 @@ import java.util.UUID;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
+import java.util.stream.IntStream;
 
 @Slf4j
 @Service
@@ -52,7 +54,6 @@ public class TransferServiceImpl implements TransferService {
             throw new TransferException("Transfer amount must be greater than zero");
         }
 
-        // ✅ Idempotency check
         return transferRepository.findByIdempotencyKey(idempotencyKey)
                 .map(existing -> {
                     log.warn("Duplicate transfer request detected for idempotencyKey={}, returning existing result", idempotencyKey);
@@ -73,18 +74,28 @@ public class TransferServiceImpl implements TransferService {
 
                     log.info("Sending transferId={} to Ledger Service", saved.getTransferId());
 
-                    LedgerTransferResponse ledgerResp = ledgerClient.sendTransfer(ledgerReq);
+                    try {
+                        LedgerTransferResponse ledgerResp = ledgerClient.sendTransfer(ledgerReq);
 
-                    if (!ledgerResp.isSuccess()) {
-                        throw new TransferException("Ledger transfer failed: " + ledgerResp.getMessage());
+                        if (!ledgerResp.isSuccess()) {
+                            throw new TransferException("Ledger transfer failed: " + ledgerResp.getMessage());
+                        }
+
+                        saved.setStatus(Transfer.Status.SUCCESS);
+                        transferRepository.save(saved);
+
+                        log.info("TransferId={} completed with status={}", saved.getTransferId(), saved.getStatus());
+                        return transferMapper.toTransferResponse(saved);
+
+                    } catch (CircuitBreakerOpenException ex) {
+                        log.error("Circuit breaker open for transferId={}, marking FAILED. Reason={}",
+                                saved.getTransferId(), ex.getMessage());
+
+                        saved.setStatus(Transfer.Status.FAILED);
+                        transferRepository.save(saved);
+
+                        throw new TransferException("Transfer failed due to circuit breaker: " + ex.getMessage());
                     }
-
-                    saved.setStatus(Transfer.Status.SUCCESS);
-                    transferRepository.save(saved);
-
-                    log.info("TransferId={} completed with status={}", saved.getTransferId(), saved.getStatus());
-
-                    return transferMapper.toTransferResponse(saved);
                 });
     }
 
@@ -106,10 +117,16 @@ public class TransferServiceImpl implements TransferService {
         log.info("Initiating batch transfer with {} transfers, idempotencyKey={}",
                 request.getTransfers().size(), idempotencyKey);
 
-        List<CompletableFuture<TransferResponse>> futures = request.getTransfers().stream()
-                .map(dto -> CompletableFuture.supplyAsync(
-                        () -> initiateTransfer(dto, idempotencyKey), executor))
-                .toList();
+        List<CompletableFuture<TransferResponse>> futures =
+                IntStream.range(0, request.getTransfers().size())
+                        .mapToObj(index -> {
+                            TransferRequest dto = request.getTransfers().get(index);
+                            String childKey = idempotencyKey + "-" + index;
+
+                            return CompletableFuture.supplyAsync(
+                                    () -> initiateTransfer(dto, childKey), executor);
+                        })
+                        .toList();
 
         List<TransferResponse> results = futures.stream()
                 .map(CompletableFuture::join)
@@ -117,6 +134,8 @@ public class TransferServiceImpl implements TransferService {
 
         log.info("Batch transfer completed: {} transfers processed", results.size());
 
-        return BatchTransferResponse.builder().results(results).build();
+        return BatchTransferResponse.builder()
+                .results(results)
+                .build();
     }
 }
